@@ -5,7 +5,7 @@ Desde esta app se controla los modos, movimientos y sistemas de voz y música de
 
 El código fuente principal está dentro de la carpeta:
 
-lib/
+📁 lib/
 
 En esta carpeta esta:
 
