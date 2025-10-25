@@ -1,0 +1,116 @@
+// ble_service.dart
+import 'dart:async';
+import 'package:flutter/material.dart';
+// import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+class BleService {
+  static final BleService _instance = BleService._internal();
+  factory BleService() => _instance;
+  BleService._internal();
+
+  final FlutterReactiveBle _ble = FlutterReactiveBle();
+  final Uuid serviceUuid = Uuid.parse("0000ffe0-0000-1000-8000-00805f9b34fb");
+  final Uuid characteristicUuid = Uuid.parse(
+    "0000ffe1-0000-1000-8000-00805f9b34fb",
+  );
+  final String expectedName = "ESP32_NimBLE";
+
+  DiscoveredDevice? _device;
+  QualifiedCharacteristic? _characteristic;
+  bool _connected = false;
+
+  final ValueNotifier<bool> isConnected = ValueNotifier(false);
+
+  StreamSubscription<DiscoveredDevice>? _scanSub;
+  StreamSubscription<ConnectionStateUpdate>? _connSub;
+
+  Future<void> init() async {
+    await _requestPermissions();
+    _startScan();
+  }
+
+  Future<void> dispose() async {
+    await _scanSub?.cancel();
+    await _connSub?.cancel();
+  }
+
+  Future<void> _requestPermissions() async {
+    await [
+      Permission.bluetoothScan,
+      Permission.bluetoothConnect,
+      Permission.location,
+    ].request();
+  }
+
+  void _startScan() {
+    _scanSub?.cancel();
+    _scanSub = _ble.scanForDevices(withServices: [serviceUuid]).listen((d) {
+      debugPrint("SCAN -> name=${d.name} id=${d.id} uuids=${d.serviceUuids}");
+      _device = d;
+      _scanSub?.cancel();
+      _connectToDevice();
+    }, onError: (e) => debugPrint("Scan error: $e"));
+  }
+
+  void _connectToDevice() {
+    final dev = _device;
+    if (dev == null) return;
+
+    _connSub?.cancel();
+    _connSub = _ble
+        .connectToDevice(
+          id: dev.id,
+          servicesWithCharacteristicsToDiscover: {
+            serviceUuid: [characteristicUuid],
+          },
+          connectionTimeout: const Duration(seconds: 10),
+        )
+        .listen(
+          (update) {
+            switch (update.connectionState) {
+              case DeviceConnectionState.connected:
+                _connected = true;
+                isConnected.value = true;
+                _characteristic = QualifiedCharacteristic(
+                  serviceId: serviceUuid,
+                  characteristicId: characteristicUuid,
+                  deviceId: dev.id,
+                );
+                debugPrint("✅ Conectado a ${dev.name} (${dev.id})");
+                break;
+              case DeviceConnectionState.disconnected:
+                _connected = false;
+                isConnected.value = false;
+                debugPrint("ℹ️ Desconectado. Reintentando scan…");
+                _startScan();
+                break;
+              default:
+                break;
+            }
+          },
+          onError: (e) {
+            debugPrint("❌ Error de conexión: $e");
+            _connected = false;
+            isConnected.value = false;
+            _startScan();
+          },
+        );
+  }
+
+  Future<void> sendCommand(int value) async {
+    if (!_connected || _characteristic == null) return;
+    try {
+      await _ble.writeCharacteristicWithResponse(
+        _characteristic!,
+        value: [value],
+      );
+      debugPrint("📤 Enviado: 0x${value.toRadixString(16).padLeft(2, '0')}");
+    } catch (e) {
+      debugPrint("❌ Error escribiendo: $e");
+    }
+  }
+
+  String get deviceName =>
+      _device?.name.isNotEmpty == true ? _device!.name : expectedName;
+}
